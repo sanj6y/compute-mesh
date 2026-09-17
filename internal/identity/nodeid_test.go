@@ -126,3 +126,25 @@ func TestLoadOrCreate(t *testing.T) {
 		}
 	})
 }
+
+func TestSet(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "lcm")
+	if err := Set(dir, "sanjay-mac", false); err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := LoadOrCreate(dir); id != "sanjay-mac" {
+		t.Errorf("LoadOrCreate after Set = %q", id)
+	}
+	if err := Set(dir, "sanjay-mac", false); err != nil {
+		t.Errorf("Set with same id should be a no-op: %v", err)
+	}
+	if err := Set(dir, "other", false); err == nil {
+		t.Error("Set should refuse to change an existing id without overwrite")
+	}
+	if err := Set(dir, "other", true); err != nil {
+		t.Errorf("Set overwrite: %v", err)
+	}
+	if err := Set(dir, "Bad ID", true); !errors.Is(err, ErrInvalidNodeID) {
+		t.Errorf("Set invalid: err = %v", err)
+	}
+}

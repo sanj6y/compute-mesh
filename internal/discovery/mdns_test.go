@@ -73,6 +73,7 @@ func TestNewMDNSValidation(t *testing.T) {
 		{"missing mesh id", Advertisement{NodeID: "n", GRPCPort: 7443}, true},
 		{"port zero", Advertisement{NodeID: "n", MeshID: "m"}, true},
 		{"port too big", Advertisement{NodeID: "n", MeshID: "m", GRPCPort: 65536}, true},
+		{"wildcard mesh without browse-only", Advertisement{NodeID: "n", MeshID: AnyMesh, GRPCPort: 1}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -201,6 +202,70 @@ func TestHandleEntryNormalizesHostname(t *testing.T) {
 	m.handleEntry(entry("a", "home", 7443, "10.0.0.2"), time.Now())
 	if got := m.Peers()[0].Hostname; got != "a.local" {
 		t.Errorf("Hostname = %q, want %q", got, "a.local")
+	}
+}
+
+func TestWildcardMeshSeesEveryMesh(t *testing.T) {
+	m, err := NewMDNS(MDNSConfig{
+		Advertisement: Advertisement{NodeID: "ctl", MeshID: AnyMesh, GRPCPort: 1},
+		BrowseOnly:    true,
+		Logger:        slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.handleEntry(entry("a", "home", 7443, "10.0.0.2"), time.Now())
+	m.handleEntry(entry("b", "work", 7443, "10.0.0.3"), time.Now())
+	if got := len(m.Peers()); got != 2 {
+		t.Errorf("wildcard browser saw %d peers, want 2", got)
+	}
+}
+
+func TestBrowseOnlyFindsCoordinator(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real mDNS traffic; skipped in -short")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	mesh := "bo-" + time.Now().Format("150405.000")
+	coord := newTestMDNS(t, Advertisement{NodeID: "bo-coord", MeshID: mesh, GRPCPort: 17443, PairPort: 17444})
+	if err := coord.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer coord.Stop()
+
+	ctl, err := NewMDNS(MDNSConfig{
+		Advertisement: Advertisement{NodeID: "bo-ctl", MeshID: AnyMesh, GRPCPort: 1},
+		BrowseOnly:    true,
+		Interfaces:    testInterfaces(t),
+		Logger:        slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ctl.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer ctl.Stop()
+	for {
+		select {
+		case ev := <-ctl.Events():
+			if ev.Kind == PeerAdded && ev.Peer.NodeID == "bo-coord" {
+				if !ev.Peer.IsCoordinator() || ev.Peer.PairAddr() == "" {
+					t.Fatalf("coordinator peer missing pair addr: %+v", ev.Peer)
+				}
+				// A browse-only instance must not have been advertised: the
+				// coordinator should never see it.
+				for _, p := range coord.Peers() {
+					if p.NodeID == "bo-ctl" {
+						t.Error("browse-only instance was advertised")
+					}
+				}
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal("browse-only instance never saw the coordinator")
+		}
 	}
 }
 

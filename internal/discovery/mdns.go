@@ -59,8 +59,14 @@ type MDNSConfig struct {
 	// EventBuffer sizes the Events channel. Default 64. When full, events are
 	// dropped (peer state is still updated; consumers should call Peers()).
 	EventBuffer int
-	Logger      *slog.Logger
+	// BrowseOnly skips advertising; used by meshctl to look for a coordinator.
+	BrowseOnly bool
+	Logger     *slog.Logger
 }
+
+// AnyMesh as Advertisement.MeshID disables the same-mesh filter. Only valid
+// with BrowseOnly: a node must never advertise a wildcard mesh.
+const AnyMesh = "*"
 
 // MDNS advertises this node and tracks peers in the same mesh.
 type MDNS struct {
@@ -83,6 +89,9 @@ func NewMDNS(cfg MDNSConfig) (*MDNS, error) {
 	}
 	if cfg.Advertisement.MeshID == "" {
 		return nil, errors.New("discovery: MeshID is required")
+	}
+	if cfg.Advertisement.MeshID == AnyMesh && !cfg.BrowseOnly {
+		return nil, errors.New("discovery: wildcard mesh is only allowed with BrowseOnly")
 	}
 	if cfg.Advertisement.GRPCPort < 1 || cfg.Advertisement.GRPCPort > 65535 {
 		return nil, fmt.Errorf("discovery: GRPCPort %d out of range", cfg.Advertisement.GRPCPort)
@@ -119,32 +128,39 @@ func (m *MDNS) Start(ctx context.Context) error {
 	if len(ifaces) == 0 {
 		return errors.New("discovery: no usable multicast interface")
 	}
-	srv, err := zeroconf.Register(ad.NodeID, ServiceType, Domain, ad.GRPCPort, ad.TXT(), ifaces)
-	if err != nil {
-		return fmt.Errorf("discovery: register mDNS service: %w", err)
+	if !m.cfg.BrowseOnly {
+		srv, err := zeroconf.Register(ad.NodeID, ServiceType, Domain, ad.GRPCPort, ad.TXT(), ifaces)
+		if err != nil {
+			return fmt.Errorf("discovery: register mDNS service: %w", err)
+		}
+		m.server = srv
 	}
-	m.server = srv
 
 	resolver, err := zeroconf.NewResolver(zeroconf.SelectIfaces(ifaces))
 	if err != nil {
-		srv.Shutdown()
+		m.Stop()
 		return fmt.Errorf("discovery: create mDNS resolver: %w", err)
 	}
 
-	ctx, m.cancel = context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx)
 	entries := make(chan *zeroconf.ServiceEntry, 32)
 	if err := resolver.Browse(ctx, ServiceType, Domain, entries); err != nil {
-		m.cancel()
-		srv.Shutdown()
+		cancel()
+		m.Stop()
 		return fmt.Errorf("discovery: browse: %w", err)
 	}
 
+	m.cancel = cancel
 	go m.loop(ctx, entries)
 	names := make([]string, len(ifaces))
 	for i, ifi := range ifaces {
 		names[i] = ifi.Name
 	}
-	m.log.Info("advertising", "service", ServiceType+"."+Domain, "node_id", ad.NodeID, "mesh_id", ad.MeshID, "grpc_port", ad.GRPCPort, "ifaces", names)
+	if m.cfg.BrowseOnly {
+		m.log.Debug("browsing", "service", ServiceType+"."+Domain, "ifaces", names)
+	} else {
+		m.log.Info("advertising", "service", ServiceType+"."+Domain, "node_id", ad.NodeID, "mesh_id", ad.MeshID, "grpc_port", ad.GRPCPort, "pair_port", ad.PairPort, "ifaces", names)
+	}
 	return nil
 }
 
@@ -216,7 +232,7 @@ func (m *MDNS) handleEntry(e *zeroconf.ServiceEntry, now time.Time) {
 	if p.NodeID == ad.NodeID {
 		return // our own announcement
 	}
-	if p.MeshID != ad.MeshID {
+	if ad.MeshID != AnyMesh && p.MeshID != ad.MeshID {
 		m.log.Debug("ignoring peer from foreign mesh", "peer", p.NodeID, "peer_mesh_id", p.MeshID)
 		return
 	}
@@ -236,7 +252,7 @@ func (m *MDNS) handleEntry(e *zeroconf.ServiceEntry, now time.Time) {
 
 	switch {
 	case !known:
-		m.log.Info("peer added", "peer", p.NodeID, "addr", p.GRPCAddr(), "host", p.Hostname, "fingerprint", short(p.Fingerprint))
+		m.log.Info("peer added", "peer", p.NodeID, "addr", p.GRPCAddr(), "host", p.Hostname, "coordinator", p.IsCoordinator(), "fingerprint", short(p.Fingerprint))
 		m.emit(PeerEvent{Kind: PeerAdded, Peer: p})
 	case peerChanged(prev, p):
 		m.log.Info("peer updated", "peer", p.NodeID, "addr", p.GRPCAddr(), "fingerprint", short(p.Fingerprint))
@@ -270,7 +286,7 @@ func (m *MDNS) emit(ev PeerEvent) {
 
 // peerChanged reports whether anything a dialer cares about differs.
 func peerChanged(a, b Peer) bool {
-	if a.GRPCPort != b.GRPCPort || a.Fingerprint != b.Fingerprint || a.Hostname != b.Hostname {
+	if a.GRPCPort != b.GRPCPort || a.PairPort != b.PairPort || a.Fingerprint != b.Fingerprint || a.Hostname != b.Hostname {
 		return true
 	}
 	if len(a.Addrs) != len(b.Addrs) {

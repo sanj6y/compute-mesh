@@ -146,9 +146,12 @@ Then **power-of-two-choices**: take top-2 by score, pick the one with lower curr
 compute-mesh/
   cmd/meshd/            daemon entry
   cmd/meshctl/          CLI: init, pair, join, status, models, drain, revoke
-  proto/lcm/v1/         node.proto, scheduler.proto, inference.proto
+  proto/lcm/v1/         node.proto, scheduler.proto, inference.proto, pairing.proto, admin.proto
   internal/discovery/   mdns.go, memberlist.go, seeds.go
-  internal/pki/         ca.go, pairing.go (PAKE), rotation.go, crl.go
+  internal/identity/    nodeid.go (persistent node_id)
+  internal/pki/         ca.go, pem.go, pairing.go (codes, Argon2id, MACs; PAKE later), rotation.go, crl.go
+  internal/pairing/     server.go (PairingService), client.go (Join)
+  internal/coordinator/ admin.go (AdminService), later registry/scheduler glue
   internal/telemetry/   sampler.go, nvml_linux.go, darwin.go, cpu.go
   internal/backend/     backend.go, llamacpp/, ollama/, vllm/, fake/
   internal/scheduler/   filters.go, score.go, p2c.go, placement.go
@@ -166,8 +169,8 @@ compute-mesh/
 ## 5. Build plan
 
 ### Weekend 1 — skeleton (makes every current resume word true)
-- [ ] `proto/` + codegen; `meshd` starts, advertises/browses mDNS, logs peers
-- [ ] `meshctl init` / `pair` / `join` with CA + one-time code (HMAC-bound CSR is fine for v1; PAKE later)
+- [x] `proto/` + codegen; `meshd` starts, advertises/browses mDNS, logs peers
+- [x] `meshctl init` / `pair` / `join` with CA + one-time code (Argon2id-stretched HMAC-bound CSR with channel binding; PAKE later). mTLS transport + AdminService landed here because `pair` needs them.
 - [ ] mTLS gRPC between 2 nodes, `Register` + `ReportTelemetry` stream (VRAM + resident models)
 - [ ] llama.cpp adapter, `Generate` streaming end-to-end
 - [ ] Scheduler v0: filters + `resident` + `vram_headroom` only

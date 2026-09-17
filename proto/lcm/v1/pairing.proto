@@ -1,0 +1,57 @@
+// pairing.proto — bootstrap a new node into the mesh with a one-time code.
+//
+// This is the only gRPC service that does not require a client certificate:
+// the joiner has none yet. It is served on a dedicated listener with the
+// coordinator's node cert (server-auth TLS). The joiner cannot verify that
+// cert (it has no CA yet), so trust comes from the code instead:
+//
+//   K          = argon2id(code, salt)                      // slow, per-session salt
+//   client_mac = HMAC(K, "lcm-pair-v1/client" || session || sha256(server_tls_cert) || csr)
+//   server_mac = HMAC(K, "lcm-pair-v1/server" || session || ca_cert || node_cert)
+//
+// Binding the server's TLS cert into client_mac means a relay in the middle
+// (presenting its own cert to the joiner) produces a MAC the real coordinator
+// rejects. Argon2id makes offline brute force of the 8-digit code impractical
+// inside the 60 s code lifetime. Codes are single-use; a session gets one
+// attempt. See docs/adr/0002-pairing.md.
+syntax = "proto3";
+
+package lcm.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/sanj6y/compute-mesh/proto/lcm/v1;lcmv1";
+
+service PairingService {
+  // Begin opens a pairing session and returns the KDF salt.
+  rpc Begin(BeginPairingRequest) returns (BeginPairingResponse);
+
+  // Complete submits the code-bound CSR and returns the signed bundle.
+  rpc Complete(CompletePairingRequest) returns (CompletePairingResponse);
+}
+
+message BeginPairingRequest {
+  string node_id = 1; // informational; the CSR is authoritative
+}
+
+message BeginPairingResponse {
+  bytes session_id = 1; // 16 random bytes
+  bytes salt = 2;       // 16 random bytes, argon2id salt
+  string mesh_id = 3;   // also visible in the mDNS TXT record, so not secret
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+message CompletePairingRequest {
+  bytes session_id = 1;
+  bytes csr_der = 2;    // PKCS#10, CN = node_id, signed by the joiner's key
+  bytes client_mac = 3; // see file comment
+}
+
+message CompletePairingResponse {
+  bytes ca_cert_der = 1;
+  bytes node_cert_der = 2;
+  string mesh_id = 3;
+  string coordinator_node_id = 4;
+  string coordinator_grpc_addr = 5; // host:port for NodeService
+  bytes server_mac = 6;
+}

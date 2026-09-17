@@ -1,0 +1,24 @@
+// admin.proto — meshctl → local meshd. Requires a client cert with the admin
+// role (SAN URI lcm://<mesh_id>/admin/<name>), minted by `meshctl init`.
+syntax = "proto3";
+
+package lcm.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/sanj6y/compute-mesh/proto/lcm/v1;lcmv1";
+
+service AdminService {
+  // CreatePairingCode mints a one-time code for `meshctl join`.
+  rpc CreatePairingCode(CreatePairingCodeRequest) returns (CreatePairingCodeResponse);
+}
+
+message CreatePairingCodeRequest {
+  uint32 ttl_seconds = 1; // 0 = server default (60)
+}
+
+message CreatePairingCodeResponse {
+  string code = 1;      // 8 digits
+  google.protobuf.Timestamp expires_at = 2;
+  string pair_addr = 3; // host:port of the PairingService listener
+}

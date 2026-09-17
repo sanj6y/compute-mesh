@@ -61,6 +61,29 @@ func LoadOrCreate(dir string) (string, error) {
 	return id, nil
 }
 
+// Set writes an operator-chosen node_id, refusing to change an existing one
+// unless overwrite is set: certs are bound to it.
+func Set(dir, id string, overwrite bool) error {
+	if err := Validate(id); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, nodeIDFile)
+	if _, err := os.Stat(path); err == nil && !overwrite {
+		existing, _ := LoadOrCreate(dir)
+		if existing == id {
+			return nil
+		}
+		return fmt.Errorf("identity: %s already holds node_id %q; certs are bound to it", path, existing)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("identity: create %s: %w", dir, err)
+	}
+	if err := os.WriteFile(path, []byte(id+"\n"), 0o600); err != nil {
+		return fmt.Errorf("identity: write %s: %w", path, err)
+	}
+	return nil
+}
+
 // Generate returns a fresh "<hostname>-<6 hex>" id without persisting it.
 func Generate() (string, error) {
 	var buf [3]byte

@@ -12,25 +12,43 @@ queue depth, and link latency to serve it fastest.
 **Early — not usable yet.** Being built in the order below; each item is
 checked when it runs on two real machines with tests.
 
-- [x] Protobuf control plane (`proto/lcm/v1`): `NodeService`, `InferenceService`, `SchedulerService`
+- [x] Protobuf control plane (`proto/lcm/v1`): `NodeService`, `InferenceService`, `SchedulerService`, `PairingService`, `AdminService`
 - [x] mDNS discovery: `meshd` advertises `_lcm._tcp.local`, browses, tracks peers in the same mesh
-- [ ] `meshctl init` / `pair` / `join`: mesh CA + one-time code pairing
-- [ ] mTLS gRPC between nodes, `Register` + `ReportTelemetry` stream
+- [x] `meshctl init` / `pair` / `join`: mesh CA, one-time 8-digit code, Argon2id-stretched and channel-bound MACs ([ADR 0002](docs/adr/0002-pairing.md))
+- [x] mTLS on every gRPC connection with mesh pinning and cert-based roles ([ADR 0001](docs/adr/0001-go-grpc-mtls.md))
+- [ ] `Register` + `ReportTelemetry` stream (VRAM, resident models)
 - [ ] llama.cpp backend adapter, streaming `Generate`
 - [ ] Scheduler v0 (resident weights + VRAM headroom)
 - [ ] OpenAI-compatible gateway (`/v1/chat/completions` SSE, `/v1/models`)
 
-## Try what exists
+## Quickstart (what exists today)
+
+On the first machine:
 
 ```bash
 make build
-./bin/meshd --mesh-id demo --grpc-port 17443 --log-format text
-# on another machine on the same LAN (or another terminal, different port/data dir):
-./bin/meshd --mesh-id demo --grpc-port 17444 --data-dir /tmp/lcm2 --log-format text
+./bin/meshctl init --mesh-id home --node-id sanjay-mac
+./bin/meshd --coordinator --log-format text
 ```
 
-Each daemon logs `peer added` with the other's `node_id`, address and gRPC
-port. Nodes with a different `--mesh-id` are ignored.
+In another terminal on that machine:
+
+```bash
+./bin/meshctl pair
+# pairing code: 09397153   (valid for 1m0s, single use)
+```
+
+On every other machine (same LAN; the coordinator is found over mDNS):
+
+```bash
+./bin/meshctl join --code 09397153 --node-id gpu-box
+./bin/meshd --log-format text
+```
+
+Every daemon logs `peer added` with the other's `node_id`, address and cert
+fingerprint. State lives in `~/.lcm` (override with `--data-dir` or
+`LCM_DATA_DIR`): `ca.crt`, `node.crt`, `node.key` (0600), plus `ca.key` and
+`admin.*` on the machine that ran `init`.
 
 ## Development
 
@@ -51,5 +69,9 @@ cmd/meshctl/        operator CLI
 proto/lcm/v1/       protobuf definitions + generated Go
 internal/discovery/ mDNS advertise/browse (memberlist gossip to follow)
 internal/identity/  persistent node_id
+internal/pki/       mesh CA, cert issuance, pairing crypto (codes, Argon2id, MACs)
+internal/pairing/   PairingService server + join client
+internal/transport/ mTLS gRPC server/dialer, principal extraction, role guard
+internal/coordinator/ AdminService (pairing codes); registry + scheduler glue later
 docs/adr/           architecture decision records
 ```

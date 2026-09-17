@@ -24,6 +24,7 @@ const (
 	txtNodeID      = "node_id"
 	txtMeshID      = "mesh_id"
 	txtGRPCPort    = "grpc_port"
+	txtPairPort    = "pair_port"
 	txtFingerprint = "fingerprint"
 )
 
@@ -40,6 +41,9 @@ type Advertisement struct {
 	MeshID string
 	// GRPCPort is the port the NodeService / InferenceService listener is bound to.
 	GRPCPort int
+	// PairPort is the PairingService listener. Only the coordinator sets it;
+	// `meshctl join` uses it to find the coordinator without a flag.
+	PairPort int
 	// Fingerprint is the SHA-256 of the node's leaf certificate (hex). Empty
 	// until the node has paired. Peers use it to detect a cert change for a
 	// known node_id before they even dial.
@@ -52,6 +56,9 @@ func (a Advertisement) TXT() []string {
 		txtNodeID + "=" + a.NodeID,
 		txtMeshID + "=" + a.MeshID,
 		txtGRPCPort + "=" + strconv.Itoa(a.GRPCPort),
+	}
+	if a.PairPort > 0 {
+		txt = append(txt, txtPairPort+"="+strconv.Itoa(a.PairPort))
 	}
 	if a.Fingerprint != "" {
 		txt = append(txt, txtFingerprint+"="+a.Fingerprint)
@@ -67,19 +74,33 @@ type Peer struct {
 	Hostname    string
 	Addrs       []net.IP
 	GRPCPort    int
+	PairPort    int // 0 unless the peer is a coordinator
 	LastSeen    time.Time
+}
+
+// IsCoordinator reports whether the peer advertises a pairing listener.
+func (p Peer) IsCoordinator() bool { return p.PairPort > 0 }
+
+// PairAddr returns host:port of the peer's pairing listener, or "".
+func (p Peer) PairAddr() string {
+	if p.PairPort == 0 {
+		return ""
+	}
+	return hostPort(p.Addrs, p.PairPort)
 }
 
 // GRPCAddr returns the first usable host:port to dial, preferring IPv4.
 // Returns "" if the peer advertised no addresses.
-func (p Peer) GRPCAddr() string {
-	for _, ip := range p.Addrs {
+func (p Peer) GRPCAddr() string { return hostPort(p.Addrs, p.GRPCPort) }
+
+func hostPort(addrs []net.IP, port int) string {
+	for _, ip := range addrs {
 		if ip.To4() != nil {
-			return net.JoinHostPort(ip.String(), strconv.Itoa(p.GRPCPort))
+			return net.JoinHostPort(ip.String(), strconv.Itoa(port))
 		}
 	}
-	for _, ip := range p.Addrs {
-		return net.JoinHostPort(ip.String(), strconv.Itoa(p.GRPCPort))
+	for _, ip := range addrs {
+		return net.JoinHostPort(ip.String(), strconv.Itoa(port))
 	}
 	return ""
 }
@@ -119,5 +140,12 @@ func ParseTXT(txt []string) (Peer, error) {
 		return Peer{}, fmt.Errorf("%w: %q", ErrBadGRPCPort, ps)
 	}
 	p.GRPCPort = port
+	if ps, ok := kv[txtPairPort]; ok && ps != "" {
+		pp, err := strconv.Atoi(ps)
+		if err != nil || pp < 1 || pp > 65535 {
+			return Peer{}, fmt.Errorf("%w: pair_port %q", ErrBadGRPCPort, ps)
+		}
+		p.PairPort = pp
+	}
 	return p, nil
 }

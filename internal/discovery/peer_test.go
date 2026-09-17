@@ -23,6 +23,11 @@ func TestAdvertisementTXT(t *testing.T) {
 			ad:   Advertisement{NodeID: "n1", MeshID: "home", GRPCPort: 7443, Fingerprint: "abc123"},
 			want: []string{"node_id=n1", "mesh_id=home", "grpc_port=7443", "fingerprint=abc123"},
 		},
+		{
+			name: "coordinator includes pair_port",
+			ad:   Advertisement{NodeID: "n1", MeshID: "home", GRPCPort: 7443, PairPort: 7444, Fingerprint: "abc123"},
+			want: []string{"node_id=n1", "mesh_id=home", "grpc_port=7443", "pair_port=7444", "fingerprint=abc123"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -49,6 +54,16 @@ func TestParseTXT(t *testing.T) {
 			name: "round trip",
 			txt:  Advertisement{NodeID: "n2", MeshID: "m", GRPCPort: 1, Fingerprint: "ff"}.TXT(),
 			want: Peer{NodeID: "n2", MeshID: "m", GRPCPort: 1, Fingerprint: "ff"},
+		},
+		{
+			name: "coordinator with pair_port",
+			txt:  []string{"node_id=n1", "mesh_id=home", "grpc_port=7443", "pair_port=7444"},
+			want: Peer{NodeID: "n1", MeshID: "home", GRPCPort: 7443, PairPort: 7444},
+		},
+		{
+			name:    "bad pair_port",
+			txt:     []string{"node_id=n1", "mesh_id=home", "grpc_port=7443", "pair_port=x"},
+			wantErr: ErrBadGRPCPort,
 		},
 		{
 			name: "unknown keys and boolean attributes ignored",
@@ -132,6 +147,7 @@ func TestPeerGRPCAddr(t *testing.T) {
 		want string
 	}{
 		{"no addrs", Peer{GRPCPort: 7443}, ""},
+		{"pair addr only for coordinators", Peer{GRPCPort: 7443, PairPort: 7444, Addrs: []net.IP{net.ParseIP("10.0.0.5")}}, "10.0.0.5:7443"},
 		{"ipv4 only", Peer{GRPCPort: 7443, Addrs: []net.IP{net.ParseIP("10.0.0.5")}}, "10.0.0.5:7443"},
 		{"ipv6 only", Peer{GRPCPort: 7443, Addrs: []net.IP{net.ParseIP("fe80::1")}}, "[fe80::1]:7443"},
 		{
@@ -146,6 +162,17 @@ func TestPeerGRPCAddr(t *testing.T) {
 				t.Errorf("GRPCAddr() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPeerPairAddr(t *testing.T) {
+	worker := Peer{GRPCPort: 7443, Addrs: []net.IP{net.ParseIP("10.0.0.5")}}
+	coord := Peer{GRPCPort: 7443, PairPort: 7444, Addrs: []net.IP{net.ParseIP("10.0.0.5")}}
+	if worker.IsCoordinator() || worker.PairAddr() != "" {
+		t.Errorf("worker: IsCoordinator=%v PairAddr=%q", worker.IsCoordinator(), worker.PairAddr())
+	}
+	if !coord.IsCoordinator() || coord.PairAddr() != "10.0.0.5:7444" {
+		t.Errorf("coord: IsCoordinator=%v PairAddr=%q", coord.IsCoordinator(), coord.PairAddr())
 	}
 }
 
@@ -164,6 +191,7 @@ func TestPeerChanged(t *testing.T) {
 			p.Addrs = []net.IP{net.ParseIP("10.0.0.5")}
 		}), false},
 		{"port", with(func(p *Peer) { p.GRPCPort = 1 }), true},
+		{"became coordinator", with(func(p *Peer) { p.PairPort = 7444 }), true},
 		{"fingerprint rotated", with(func(p *Peer) { p.Fingerprint = "bb" }), true},
 		{"hostname", with(func(p *Peer) { p.Hostname = "x.local." }), true},
 		{"addr added", with(func(p *Peer) { p.Addrs = append(p.Addrs, net.ParseIP("10.0.0.6")) }), true},
