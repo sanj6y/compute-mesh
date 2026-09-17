@@ -1,7 +1,8 @@
 # compute-mesh — Local Compute Mesh
 #
 # Generated protobuf code is checked in so `go build ./...` works without protoc.
-# Re-run `make proto` after editing anything under proto/.
+# Re-run `make proto` after editing anything under proto/. CI regenerates with
+# protoc 34.x and fails on drift (the protoc version header line is ignored).
 
 GO        ?= go
 GOBIN     := $(shell $(GO) env GOPATH)/bin

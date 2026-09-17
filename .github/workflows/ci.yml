@@ -36,9 +36,11 @@ jobs:
           cache: true
       - uses: arduino/setup-protoc@v3
         with:
-          version: "34.x"
+          version: "34.1" # keep in step with the local toolchain noted in the Makefile
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: regenerate
         run: make proto
       - name: check no drift
-        run: git diff --exit-code -- proto/
+        # Ignore the "protoc vX.Y.Z" header comment so a patch-level protoc
+        # difference between a laptop and CI does not count as drift.
+        run: git diff --exit-code -I '^// [-[:space:]]*protoc +v' -- proto/
