@@ -1,0 +1,102 @@
+// node.proto — worker ⇄ coordinator control plane.
+//
+// Workers dial the coordinator over mTLS, register once, then hold a
+// long-lived client stream of TelemetrySample messages (1 s cadence).
+// The coordinator never pushes on this stream; coordinator → worker
+// commands (load/unload/drain) live in inference.proto because the
+// coordinator already dials workers for Generate.
+syntax = "proto3";
+
+package lcm.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/sanj6y/compute-mesh/proto/lcm/v1;lcmv1";
+
+service NodeService {
+  // Register announces a worker to the coordinator. Idempotent: re-registering
+  // with the same node_id replaces the previous NodeInfo.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // ReportTelemetry is a long-lived client stream. One sample per second.
+  // The coordinator marks the node stale if no sample arrives for 3 intervals.
+  rpc ReportTelemetry(stream TelemetrySample) returns (ReportTelemetryResponse);
+}
+
+// NodeInfo is the static-ish description of a worker. Anything that changes
+// every second belongs in TelemetrySample instead.
+message NodeInfo {
+  string node_id = 1;     // stable identifier, matches the cert's SAN URI
+  string mesh_id = 2;     // pairing domain; connections to a foreign mesh_id are refused
+  string hostname = 3;
+  string grpc_addr = 4;   // host:port the coordinator dials for InferenceService
+  string version = 5;     // meshd build version
+  repeated string backends = 6; // "llamacpp", "ollama", "vllm", "fake"
+  GpuInfo gpu = 7;
+  repeated string tags = 8;     // free-form, e.g. "trusted:home" for privacy filters
+}
+
+message GpuInfo {
+  string vendor = 1;            // "nvidia", "apple", "none"
+  string name = 2;              // "RTX 4090", "Apple M3 Max"
+  uint32 count = 3;
+  uint64 vram_total_bytes = 4;  // unified memory on Apple Silicon
+}
+
+// ModelInfo describes one model a worker can serve.
+message ModelInfo {
+  string name = 1;              // e.g. "llama-3.1-8b-instruct"
+  string quant = 2;             // e.g. "Q4_K_M"
+  uint64 size_bytes = 3;        // weights on disk; used for headroom filter
+  bool resident = 4;            // true if weights are loaded in VRAM right now
+  string backend = 5;
+  google.protobuf.Timestamp last_used = 6;
+}
+
+message RegisterRequest {
+  NodeInfo node = 1;
+}
+
+message RegisterResponse {
+  string coordinator_id = 1;
+  // telemetry_interval_ms lets the coordinator tune sampling cadence. Default 1000.
+  uint32 telemetry_interval_ms = 2;
+}
+
+// TelemetrySample is what the scheduler scores on. Keep it flat and cheap.
+message TelemetrySample {
+  string node_id = 1;
+  google.protobuf.Timestamp ts = 2;
+
+  // memory
+  uint64 vram_total_bytes = 3;
+  uint64 vram_used_bytes = 4;
+  uint64 vram_free_bytes = 5;
+  uint64 ram_free_bytes = 6;
+
+  // models
+  repeated ModelInfo models = 7;
+
+  // load
+  uint32 queue_depth = 8;       // requests waiting on the backend
+  uint32 in_flight = 9;         // requests currently generating
+  double tokens_per_sec = 10;   // over last 10 s, all streams summed
+  double ttft_p50_ms = 11;      // over last 60 s
+  double ttft_p99_ms = 12;
+  double cpu_load_1m = 13;      // normalized 0..1 per core
+
+  // gpu
+  double gpu_temp_c = 14;
+  double gpu_power_w = 15;
+  double gpu_util = 16;         // 0..1, NVML only
+
+  // link
+  double rtt_to_coordinator_ms = 17;
+
+  // lifecycle
+  bool draining = 18;
+}
+
+message ReportTelemetryResponse {
+  uint64 samples_received = 1;
+}

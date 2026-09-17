@@ -1,0 +1,13 @@
+# binaries
+/bin/
+/dist/
+*.test
+*.out
+
+# OS
+.DS_Store
+
+# local state (certs, keys, node ids) must never be committed
+/.lcm/
+*.key
+*.pem

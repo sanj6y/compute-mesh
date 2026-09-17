@@ -1,0 +1,87 @@
+// scheduler.proto — gateway → coordinator placement API and meshctl status.
+//
+// In v1 the gateway and coordinator usually share a process and call the
+// scheduler in-memory; this service is the boundary for running them apart
+// and for `meshctl status` / `meshctl models`.
+syntax = "proto3";
+
+package lcm.v1;
+
+import "google/protobuf/timestamp.proto";
+import "lcm/v1/node.proto";
+
+option go_package = "github.com/sanj6y/compute-mesh/proto/lcm/v1;lcmv1";
+
+service SchedulerService {
+  // Schedule picks the worker that should serve one request.
+  rpc Schedule(ScheduleRequest) returns (ScheduleResponse);
+
+  // ListNodes returns the registry view: NodeInfo + latest telemetry per node.
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+
+  // ListModels returns the deduped union of models across the mesh.
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+}
+
+enum Op {
+  OP_UNSPECIFIED = 0;
+  OP_CHAT = 1;
+  OP_COMPLETION = 2;
+  OP_EMBED = 3;
+}
+
+enum Privacy {
+  PRIVACY_UNSPECIFIED = 0;  // any node in the mesh
+  PRIVACY_LOCAL_ONLY = 1;   // only nodes tagged "trusted:home"
+}
+
+message ScheduleRequest {
+  string request_id = 1;
+  string model = 2;
+  Op op = 3;
+  Privacy privacy = 4;
+  string prefer_node = 5;           // X-LCM-Prefer-Node; soft preference
+  repeated string exclude_nodes = 6; // failover: nodes that already failed this request
+  uint32 estimated_tokens = 7;
+}
+
+message ScheduleResponse {
+  string node_id = 1;
+  string grpc_addr = 2;
+  double score = 3;
+  bool model_resident = 4;          // false ⇒ expect a cold start
+  uint64 decision_ns = 5;           // wall time the scheduler spent; feeds the <1 ms p99 target
+  repeated Candidate candidates = 6; // top-k for debugging / `meshctl explain`
+}
+
+message Candidate {
+  string node_id = 1;
+  double score = 2;
+  string rejected_by = 3;           // empty if it passed all hard filters
+}
+
+enum NodeState {
+  NODE_STATE_UNSPECIFIED = 0;
+  NODE_STATE_ALIVE = 1;
+  NODE_STATE_SUSPECT = 2;
+  NODE_STATE_DEAD = 3;
+  NODE_STATE_DRAINING = 4;
+}
+
+message NodeView {
+  NodeInfo info = 1;
+  TelemetrySample telemetry = 2;
+  NodeState state = 3;
+  google.protobuf.Timestamp last_seen = 4;
+}
+
+message ListNodesRequest {}
+message ListNodesResponse { repeated NodeView nodes = 1; }
+
+message ListModelsRequest {}
+message MeshModel {
+  string name = 1;
+  repeated string resident_on = 2;  // node_ids with weights loaded
+  repeated string available_on = 3; // node_ids with weights on disk
+}
+message ListModelsResponse { repeated MeshModel models = 1; }
